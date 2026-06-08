@@ -1,0 +1,30 @@
+{
+  "title": "Checkout p95 latency 5x",
+  "alert": "ALERT HighLatencyCheckout: checkout p95 latency is 5x baseline for 10m",
+  "topology": [
+    {"name": "gateway", "depends_on": ["checkout"]},
+    {"name": "checkout", "depends_on": ["payments", "orders"]},
+    {"name": "payments", "depends_on": ["postgres"]},
+    {"name": "orders", "depends_on": ["postgres", "redis"]},
+    {"name": "postgres", "depends_on": []},
+    {"name": "redis", "depends_on": []}
+  ],
+  "metrics": [
+    {"metric": "http_request_duration_p95", "labels": {"service": "checkout"}, "baseline": 0.2, "anomaly": 1.0, "anomaly_start_min": -12, "unit": "s"},
+    {"metric": "http_requests_error_rate", "labels": {"service": "payments"}, "baseline": 0.01, "anomaly": 0.18, "anomaly_start_min": -12, "unit": "ratio"},
+    {"metric": "pg_connections_active", "labels": {"service": "postgres"}, "baseline": 40, "anomaly": 100, "anomaly_start_min": -13, "unit": "count"},
+    {"metric": "http_request_duration_p95", "labels": {"service": "orders"}, "baseline": 0.15, "anomaly": 0.16, "anomaly_start_min": 0, "unit": "s"}
+  ],
+  "logs": [
+    {"service": "payments", "level": "error", "message": "db timeout acquiring connection from pool (waited 5000ms)"},
+    {"service": "payments", "level": "error", "message": "upstream request failed: context deadline exceeded"},
+    {"service": "postgres", "level": "warning", "message": "FATAL: too many connections for role \"payments\""},
+    {"service": "checkout", "level": "warning", "message": "downstream payments p99 elevated; retrying"},
+    {"service": "gateway", "level": "info", "message": "200 POST /checkout 5123ms"}
+  ],
+  "alerts": [
+    {"name": "HighLatencyCheckout", "severity": "critical", "service": "checkout", "summary": "checkout p95 latency 5x baseline for 10m"},
+    {"name": "PaymentErrorsHigh", "severity": "warning", "service": "payments", "summary": "payments error rate > 15%"}
+  ],
+  "root_cause_key": "postgres-connection-exhaustion"
+}

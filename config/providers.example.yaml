@@ -1,0 +1,61 @@
+# Inference gateway provider registry.
+# Ordered by priority: the gateway tries top-to-bottom and AUTOMATICALLY FALLS BACK
+# to the next provider on timeout / rate-limit / 5xx / connection errors.
+#
+# Every provider speaks the OpenAI Chat Completions API, so a local vLLM server and
+# any hosted OpenAI-compatible API (Gemini, OpenAI, Groq, Together, ...) are
+# interchangeable — only base_url / model / key change. A provider is skipped at load
+# time if it has no usable API key (localhost vLLM is exempt — it accepts "EMPTY").
+# If NO provider is usable, the gateway falls back to a deterministic offline mock model.
+#
+# Copy this file to config/providers.yaml and edit. Set the matching key in .env.
+#
+# NOTE: all models below support OpenAI-style tool/function calling, which the agent
+# loop requires. Avoid non-tool-calling or preview models that break the tools schema.
+
+providers:
+  # 1) Local, self-hosted vLLM (high-throughput batched inference).
+  #    Enable this when running vLLM locally; start it with tool calling on:
+  #      vllm serve meta-llama/Llama-3.1-8B-Instruct \
+  #        --enable-auto-tool-choice --tool-call-parser llama3_json
+  - name: vllm-local
+    base_url: http://localhost:8000/v1
+    api_key_env: VLLM_API_KEY        # vLLM accepts any string ("EMPTY")
+    model: meta-llama/Llama-3.1-8B-Instruct
+    timeout_s: 60
+    max_context_tokens: 8192
+    enabled: false
+
+  # 2) Google Gemini via its OpenAI-compatible endpoint (primary hosted provider).
+  #    gemini-2.5-flash is fast, cheap, and supports tool calling.
+  - name: gemini
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+    api_key_env: GEMINI_API_KEY
+    model: gemini-2.5-flash
+    timeout_s: 45
+    max_context_tokens: 1048576
+    enabled: true
+
+  # 3) OpenAI (automatic fallback if Gemini errors / rate-limits).
+  - name: openai
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    model: gpt-4o-mini
+    timeout_s: 45
+    max_context_tokens: 128000
+    enabled: true
+
+  # 4) Groq (another OpenAI-compatible fallback — disabled by default).
+  - name: groq
+    base_url: https://api.groq.com/openai/v1
+    api_key_env: GROQ_API_KEY
+    model: llama-3.3-70b-versatile
+    timeout_s: 45
+    max_context_tokens: 32768
+    enabled: false
+
+defaults:
+  temperature: 0.1
+  max_tokens: 1024
+  retries_per_provider: 2
+  backoff_base_s: 0.5
