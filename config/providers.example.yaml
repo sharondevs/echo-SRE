@@ -10,12 +10,14 @@
 #
 # Copy this file to config/providers.yaml and edit. Set the matching key in .env.
 #
-# NOTE: all models below support OpenAI-style tool/function calling, which the agent
-# loop requires. Avoid non-tool-calling or preview models that break the tools schema.
+# IMPORTANT: every model below must support OpenAI-style tool/function calling (the agent
+# requires it). Verify a new model with a quick tools probe before adding it. You can also
+# list the SAME provider's different models as separate entries to build a deep fallback
+# chain — the aggregate rate/day budget becomes the sum of each model's quota.
 
 providers:
-  # 1) Local, self-hosted vLLM (high-throughput batched inference).
-  #    Enable this when running vLLM locally; start it with tool calling on:
+  # 1) Local, self-hosted vLLM (high-throughput batched inference). Enable when running
+  #    vLLM locally with tool calling on:
   #      vllm serve meta-llama/Llama-3.1-8B-Instruct \
   #        --enable-auto-tool-choice --tool-call-parser llama3_json
   - name: vllm-local
@@ -26,9 +28,23 @@ providers:
     max_context_tokens: 8192
     enabled: false
 
-  # 2) Google Gemini via its OpenAI-compatible endpoint (primary hosted provider).
-  #    gemini-2.5-flash is fast, cheap, and supports tool calling.
-  - name: gemini
+  # 2) Google Gemini via its OpenAI-compatible endpoint — a multi-model fallback chain.
+  #    All verified to support OpenAI-format tool calling. Order by free-tier headroom.
+  - name: gemini-3.1-flash-lite
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+    api_key_env: GEMINI_API_KEY
+    model: gemini-3.1-flash-lite
+    timeout_s: 45
+    max_context_tokens: 1048576
+    enabled: true
+  - name: gemini-2.5-flash-lite
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+    api_key_env: GEMINI_API_KEY
+    model: gemini-2.5-flash-lite
+    timeout_s: 45
+    max_context_tokens: 1048576
+    enabled: true
+  - name: gemini-2.5-flash
     base_url: https://generativelanguage.googleapis.com/v1beta/openai/
     api_key_env: GEMINI_API_KEY
     model: gemini-2.5-flash
@@ -36,7 +52,7 @@ providers:
     max_context_tokens: 1048576
     enabled: true
 
-  # 3) OpenAI (automatic fallback if Gemini errors / rate-limits).
+  # 3) OpenAI (cross-provider fallback — skipped unless OPENAI_API_KEY is set).
   - name: openai
     base_url: https://api.openai.com/v1
     api_key_env: OPENAI_API_KEY
@@ -44,15 +60,6 @@ providers:
     timeout_s: 45
     max_context_tokens: 128000
     enabled: true
-
-  # 4) Groq (another OpenAI-compatible fallback — disabled by default).
-  - name: groq
-    base_url: https://api.groq.com/openai/v1
-    api_key_env: GROQ_API_KEY
-    model: llama-3.3-70b-versatile
-    timeout_s: 45
-    max_context_tokens: 32768
-    enabled: false
 
 defaults:
   temperature: 0.1

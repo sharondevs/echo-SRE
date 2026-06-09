@@ -5,10 +5,26 @@ import pytest
 import respx
 
 from echo_sre.config import ProviderConfig
-from echo_sre.inference.provider import Provider, ProviderError
-from echo_sre.inference.types import Message
+from echo_sre.inference.provider import Provider, ProviderError, _to_openai_messages
+from echo_sre.inference.types import Message, ToolCall
 
 BASE = "https://api.test/v1"
+
+
+def test_gemini_thought_signature_round_trips_only_when_enabled():
+    sig = {"google": {"thought_signature": "abc123"}}
+    msgs = [
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=[ToolCall(id="c1", name="list_alerts", arguments={}, extra=sig)],
+        )
+    ]
+    # Gemini path replays extra_content; generic OpenAI path strips it.
+    with_extra = _to_openai_messages(msgs, include_extra=True)[0]["tool_calls"][0]
+    without_extra = _to_openai_messages(msgs, include_extra=False)[0]["tool_calls"][0]
+    assert with_extra["extra_content"] == sig
+    assert "extra_content" not in without_extra
 
 
 def _provider() -> Provider:

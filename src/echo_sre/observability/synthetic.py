@@ -106,8 +106,11 @@ class SyntheticBackend:
         for i, log in enumerate(self.scenario.get("logs", [])):
             if service and log.get("service") != service:
                 continue
-            if pattern and pattern.lower() not in log.get("message", "").lower():
-                continue
+            if pattern:
+                p = pattern.lower()
+                haystack = f"{log.get('message', '')} {log.get('level', '')}".lower()
+                if p not in haystack:
+                    continue
             out.append(
                 LogLine(
                     ts=now - (len(self.scenario.get("logs", [])) - i) * 30,

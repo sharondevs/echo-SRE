@@ -36,24 +36,27 @@ class ProviderError(Exception):
         self.retryable = retryable
 
 
-def _to_openai_messages(messages: list[Message]) -> list[dict]:
-    """Serialize provider-neutral messages into OpenAI wire format."""
+def _to_openai_messages(messages: list[Message], include_extra: bool = False) -> list[dict]:
+    """Serialize provider-neutral messages into OpenAI wire format.
+
+    When ``include_extra`` is set (Gemini endpoint), each tool call replays its provider
+    passthrough (e.g. the Gemini 3.x thought_signature) so multi-turn tool calling works.
+    """
     out: list[dict] = []
     for m in messages:
         if m.role == "assistant" and m.tool_calls:
-            out.append(
-                {
-                    "role": "assistant",
-                    "content": m.content or "",
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {"name": tc.name, "arguments": _dumps(tc.arguments)},
-                        }
-                        for tc in m.tool_calls
-                    ],
+            tool_calls = []
+            for tc in m.tool_calls:
+                entry = {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.name, "arguments": _dumps(tc.arguments)},
                 }
+                if include_extra and tc.extra:
+                    entry["extra_content"] = tc.extra
+                tool_calls.append(entry)
+            out.append(
+                {"role": "assistant", "content": m.content or "", "tool_calls": tool_calls}
             )
         elif m.role == "tool":
             out.append(
@@ -86,7 +89,10 @@ def _parse_tool_calls(raw_tool_calls) -> list[ToolCall] | None:
             args = json.loads(fn.arguments) if fn.arguments else {}
         except (json.JSONDecodeError, TypeError):
             args = {"_raw": fn.arguments}
-        parsed.append(ToolCall(id=tc.id or f"call_{len(parsed)}", name=fn.name, arguments=args))
+        extra = (getattr(tc, "model_extra", None) or {}).get("extra_content")
+        parsed.append(
+            ToolCall(id=tc.id or f"call_{len(parsed)}", name=fn.name, arguments=args, extra=extra)
+        )
     return parsed or None
 
 
@@ -95,6 +101,9 @@ class Provider:
 
     def __init__(self, cfg: ProviderConfig):
         self.cfg = cfg
+        # Gemini's OpenAI-compatible endpoint round-trips a thought_signature via
+        # extra_content; only echo that field back to Gemini (other APIs reject it).
+        self._is_gemini = "generativelanguage.googleapis.com" in cfg.base_url
         self._client = AsyncOpenAI(
             base_url=cfg.base_url,
             api_key=cfg.resolve_api_key(),
@@ -116,7 +125,7 @@ class Provider:
         start = time.perf_counter()
         kwargs: dict = {
             "model": self.cfg.model,
-            "messages": _to_openai_messages(messages),
+            "messages": _to_openai_messages(messages, self._is_gemini),
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
@@ -159,7 +168,7 @@ class Provider:
         """Stream text deltas. Used for the final answer (tool steps use ``chat``)."""
         kwargs: dict = {
             "model": self.cfg.model,
-            "messages": _to_openai_messages(messages),
+            "messages": _to_openai_messages(messages, self._is_gemini),
             "temperature": temperature,
             "max_tokens": max_tokens,
             "stream": True,

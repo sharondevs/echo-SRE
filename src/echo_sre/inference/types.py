@@ -15,6 +15,10 @@ class ToolCall(BaseModel):
     id: str
     name: str
     arguments: dict = Field(default_factory=dict)
+    # Provider-specific passthrough that must be replayed on the next turn. Gemini 3.x
+    # "thinking" models return a thought_signature here (under extra_content.google) and
+    # reject multi-turn tool conversations if it is not echoed back.
+    extra: dict | None = None
 
 
 class Message(BaseModel):
