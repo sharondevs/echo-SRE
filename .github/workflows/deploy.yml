@@ -59,9 +59,14 @@ jobs:
       - name: Install containerapp extension
         run: az extension add --name containerapp --upgrade --only-show-errors
 
-      # Build the image inside ACR (no local Docker needed). Uses the SP's push role.
-      - name: Build image in ACR
-        run: az acr build -r "$ACR_NAME" -t "echo-sre:${{ github.sha }}" -t "echo-sre:latest" .
+      # Build on the runner and push via `az acr login` (AAD token from the SP, which has
+      # the data-plane push role). ACR Tasks (`az acr build`) can't get push creds on this
+      # registry, but a direct docker push works — same path that succeeded before.
+      - name: Build & push image
+        run: |
+          az acr login -n "$ACR_NAME"
+          docker build -t "$ACR_NAME.azurecr.io/echo-sre:${{ github.sha }}" .
+          docker push "$ACR_NAME.azurecr.io/echo-sre:${{ github.sha }}"
 
       - name: Ensure Container Apps environment
         run: |
