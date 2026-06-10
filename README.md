@@ -129,10 +129,22 @@ echo-sre serve-api            # uvicorn on :8000
 followed by the verdict. `GET /` is a health/info probe; the Prometheus exporter on port
 9090 exposes series including **`echo_sre_llm_fallbacks_total`**.
 
+The request carries an `sre_mode` selecting where the agent sources telemetry — each run
+spins up its own MCP server with that backend, so a single hosted service serves all three:
+
+- `demo` (default) — the bundled synthetic incident; no config.
+- `custom` — a caller-supplied synthetic scenario JSON (`scenario`).
+- `live` — a real stack (`prometheus_url`, optional `loki_url` / `alertmanager_url`).
+
 ```bash
-curl -N -X POST localhost:8000/stream-chat \
-  -H 'Content-Type: application/json' \
-  -d '{"message":"checkout p95 latency is 5x baseline","mode":"sre"}'
+# demo
+curl -N -X POST localhost:8000/stream-chat -H 'Content-Type: application/json' \
+  -d '{"message":"checkout p95 latency is 5x baseline","sre_mode":"demo"}'
+
+# live (bring your own Prometheus/Loki)
+curl -N -X POST localhost:8000/stream-chat -H 'Content-Type: application/json' \
+  -d '{"message":"investigate the firing alerts","sre_mode":"live",
+       "prometheus_url":"https://prom.mycorp.io","loki_url":"https://loki.mycorp.io"}'
 ```
 
 ## Real telemetry instead of the demo

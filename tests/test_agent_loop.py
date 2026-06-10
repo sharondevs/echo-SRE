@@ -1,4 +1,8 @@
-"""End-to-end agent loop, offline (mock model + synthetic backend, direct tools)."""
+"""End-to-end agent loop, offline: mock model + synthetic backend over a real MCP subprocess.
+
+These spawn the ECHO-SRE MCP server (the only tool transport) and drive it with the
+deterministic mock model, so they exercise the genuine MCP round-trip without any API keys.
+"""
 
 import json
 from pathlib import Path
@@ -17,7 +21,7 @@ _SCENARIO = json.loads(
 @pytest.mark.asyncio
 async def test_investigation_reaches_root_cause():
     gw = InferenceGateway([MockProvider()])
-    runner = AgentRunner(gw, use_mcp=False, scenario=_SCENARIO, max_steps=8)
+    runner = AgentRunner(gw, scenario=_SCENARIO, max_steps=8)
 
     result = await runner.investigate(_SCENARIO["alert"])
 
@@ -35,7 +39,7 @@ async def test_investigation_reaches_root_cause():
 @pytest.mark.asyncio
 async def test_stream_emits_tool_and_final_events():
     gw = InferenceGateway([MockProvider()])
-    runner = AgentRunner(gw, use_mcp=False, scenario=_SCENARIO, max_steps=8)
+    runner = AgentRunner(gw, scenario=_SCENARIO, max_steps=8)
 
     types = []
     async for ev in runner.stream(_SCENARIO["alert"]):

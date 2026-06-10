@@ -1,10 +1,14 @@
-"""The SRE investigation agent — a ReAct loop over the observability toolset.
+"""The SRE investigation agent — a ReAct loop driven entirely over MCP.
 
-Two tool transports share the same loop:
-  * MCP (default): the agent spawns the ECHO-SRE MCP server over stdio and calls tools
-    through a real ``ClientSession`` — an authentic end-to-end MCP round-trip.
-  * direct: tools are called in-process via :func:`echo_sre.tools.call_tool` — a fast,
-    hermetic path used by tests and the high-throughput HTTP API.
+The agent ALWAYS talks to its tools through a real Model Context Protocol
+``ClientSession``: for every investigation it spawns the ECHO-SRE MCP server as a stdio
+subprocess and calls tools through it. There is no in-process shortcut — MCP is the only
+path, which is what makes this an authentic MCP system.
+
+Because the server is launched per investigation, each run can be pointed at a different
+backend by passing environment to the subprocess: a custom synthetic ``scenario`` (written
+to a temp file) or a live Prometheus/Loki/Alertmanager stack (``backend_env``). That is how
+the portfolio's "SRE mode" supports Demo / Custom-scenario / Live without any shared state.
 
 The loop drives the inference gateway (with automatic provider fallback) and exposes both
 a one-shot :meth:`AgentRunner.investigate` and a streaming :meth:`AgentRunner.stream` that
@@ -17,6 +21,7 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Awaitable, Callable, Literal
 
@@ -24,7 +29,6 @@ from pydantic import BaseModel, Field
 
 from ..inference import InferenceGateway, Message, ToolCall, ToolSpec, Usage
 from ..inference.metrics import AGENT_STEPS, AGENT_TOOL_CALLS
-from ..tools import TOOL_SPECS, ToolContext, call_tool
 from .prompts import SRE_SYSTEM_PROMPT
 
 EmitFn = Callable[["AgentEvent"], Awaitable[None]]
@@ -50,21 +54,8 @@ class IncidentResult(BaseModel):
     providers_used: list[str] = Field(default_factory=list)
 
 
-# --- Tool transports ----------------------------------------------------------
-class _DirectTools:
-    """In-process tools (no MCP); used by tests and the HTTP API."""
-
-    def __init__(self, ctx: ToolContext):
-        self.ctx = ctx
-        self.specs = TOOL_SPECS
-
-    async def invoke(self, name: str, args: dict) -> str:
-        result = await call_tool(self.ctx, name, args)
-        return json.dumps(result, default=str)
-
-
 class _MCPTools:
-    """Tools served by the real ECHO-SRE MCP server over a stdio ClientSession."""
+    """Tools served by the ECHO-SRE MCP server over a stdio ClientSession."""
 
     def __init__(self, session, specs: list[ToolSpec]):
         self._session = session
@@ -72,40 +63,61 @@ class _MCPTools:
 
     async def invoke(self, name: str, args: dict) -> str:
         result = await self._session.call_tool(name, args or {})
+        # Prefer MCP structured output: FastMCP returns list/dict tools as
+        # structuredContent (lists are wrapped as {"result": [...]}). This gives a clean
+        # JSON payload for both the LLM and our own parsing, instead of N text blocks.
+        sc = getattr(result, "structuredContent", None)
+        if isinstance(sc, dict):
+            data = sc["result"] if set(sc.keys()) == {"result"} else sc
+            return json.dumps(data, default=str)
         parts = [getattr(b, "text", None) for b in result.content]
         parts = [p for p in parts if p is not None]
         return "\n".join(parts) if parts else "[]"
 
 
 @asynccontextmanager
-async def _open_tools(use_mcp: bool, scenario_path: str | None, scenario: dict | None):
-    if not use_mcp:
-        yield _DirectTools(ToolContext.default(scenario=scenario))
-        return
+async def _open_tools(scenario: dict | None, backend_env: dict[str, str] | None):
+    """Spawn the ECHO-SRE MCP server and yield a tool transport bound to it.
 
-    # Spawn our own MCP server as a subprocess and talk to it as a client.
+    ``scenario`` (a synthetic incident) is written to a temp file and pointed at via
+    ``ECHO_SRE_SCENARIO``. ``backend_env`` overrides backend selection for this run
+    (e.g. ``ECHO_SRE_BACKEND=prometheus`` + ``ECHO_SRE_PROM_URL``/``ECHO_SRE_LOKI_URL``).
+    """
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
     env = dict(os.environ)
-    if scenario_path:
-        env["ECHO_SRE_SCENARIO"] = scenario_path
-    params = StdioServerParameters(
-        command=sys.executable, args=["-m", "echo_sre.mcp_server.server"], env=env
-    )
-    async with stdio_client(params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            listed = await session.list_tools()
-            specs = [
-                ToolSpec(
-                    name=t.name,
-                    description=t.description or "",
-                    parameters=t.inputSchema or {"type": "object", "properties": {}},
-                )
-                for t in listed.tools
-            ]
-            yield _MCPTools(session, specs)
+    if backend_env:
+        env.update(backend_env)
+
+    tmp_path: str | None = None
+    if scenario is not None:
+        fd, tmp_path = tempfile.mkstemp(prefix="echo_sre_scn_", suffix=".json")
+        with os.fdopen(fd, "w") as fh:
+            json.dump(scenario, fh)
+        env["ECHO_SRE_SCENARIO"] = tmp_path
+        env.setdefault("ECHO_SRE_BACKEND", "synthetic")
+
+    try:
+        params = StdioServerParameters(
+            command=sys.executable, args=["-m", "echo_sre.mcp_server.server"], env=env
+        )
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                listed = await session.list_tools()
+                specs = [
+                    ToolSpec(
+                        name=t.name,
+                        description=t.description or "",
+                        parameters=t.inputSchema or {"type": "object", "properties": {}},
+                    )
+                    for t in listed.tools
+                ]
+                yield _MCPTools(session, specs)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 class AgentRunner:
@@ -114,15 +126,13 @@ class AgentRunner:
         gateway: InferenceGateway,
         *,
         max_steps: int = 8,
-        use_mcp: bool = True,
-        scenario_path: str | None = None,
         scenario: dict | None = None,
+        backend_env: dict[str, str] | None = None,
     ):
         self.gateway = gateway
         self.max_steps = max_steps
-        self.use_mcp = use_mcp
-        self.scenario_path = scenario_path
         self.scenario = scenario
+        self.backend_env = backend_env
 
     async def investigate(self, alert: str) -> IncidentResult:
         """Run the investigation to completion (no streaming)."""
@@ -168,7 +178,7 @@ class AgentRunner:
         providers_used: list[str] = []
         summary = ""
 
-        async with _open_tools(self.use_mcp, self.scenario_path, self.scenario) as tools:
+        async with _open_tools(self.scenario, self.backend_env) as tools:
             await _emit(AgentEvent(type="status", text="Investigation started"))
             for _step in range(self.max_steps):
                 resp = await self.gateway.chat(messages, tools=tools.specs)

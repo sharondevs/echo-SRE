@@ -23,7 +23,7 @@ from .inference.metrics import start_metrics_server
 from .inference.mock import MockProvider
 from .observability.factory import load_scenario
 
-app = typer.Typer(add_completion=False, help="ECHO-SRE — agentic SRE copilot over MCP.")
+app = typer.Typer(add_completion=True, help="ECHO-SRE — agentic SRE copilot over MCP.")
 console = Console()
 
 
@@ -52,17 +52,15 @@ async def _drive(runner: AgentRunner, alert: str) -> None:
 
 
 @app.command()
-def demo(
-    mcp: bool = typer.Option(True, help="Use a real MCP client round-trip for tool calls."),
-):
+def demo():
     """Run the bundled incident with the offline mock model — no API keys required."""
     start_metrics_server(get_settings().metrics_port)
     gateway = InferenceGateway([MockProvider()])
     scenario = load_scenario("scenarios/checkout_latency.json")
     runner = AgentRunner(
-        gateway, use_mcp=mcp, scenario=scenario, scenario_path="scenarios/checkout_latency.json"
+        gateway, scenario=scenario, backend_env={"ECHO_SRE_BACKEND": "synthetic"}
     )
-    console.print("[dim]model: mock (offline)  •  tools: %s[/dim]" % ("MCP" if mcp else "direct"))
+    console.print("[dim]model: mock (offline)  •  tools: MCP[/dim]")
     asyncio.run(_drive(runner, scenario["alert"]))
 
 
@@ -70,7 +68,6 @@ def demo(
 def investigate(
     alert: str = typer.Argument(..., help="The alert / symptom to investigate."),
     scenario: str = typer.Option("scenarios/checkout_latency.json", help="Synthetic scenario file."),
-    no_mcp: bool = typer.Option(False, "--no-mcp", help="Call tools in-process instead of over MCP."),
     max_steps: int = typer.Option(8, help="Max agent reasoning steps."),
 ):
     """Investigate an alert with the real inference gateway (provider chain + fallback)."""
@@ -78,8 +75,8 @@ def investigate(
     gateway = InferenceGateway.from_config()
     console.print("[dim]provider chain: %s[/dim]" % " → ".join(gateway.provider_names))
     runner = AgentRunner(
-        gateway, max_steps=max_steps, use_mcp=not no_mcp,
-        scenario=load_scenario(scenario), scenario_path=scenario,
+        gateway, max_steps=max_steps, scenario=load_scenario(scenario),
+        backend_env={"ECHO_SRE_BACKEND": "synthetic"},
     )
     asyncio.run(_drive(runner, alert))
 

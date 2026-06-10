@@ -30,8 +30,32 @@ class ChatRequest(BaseModel):
     message: str
     mode: str | None = "sre"
     session_id: str | None = None
-    scenario: str | None = None  # optional scenario file path (synthetic backend)
     max_steps: int | None = None
+
+    # SRE sub-mode: how to source the telemetry the agent investigates.
+    #   demo   -> bundled synthetic incident (default; no config needed)
+    #   custom -> caller-supplied synthetic scenario JSON (`scenario`)
+    #   live   -> a real Prometheus/Loki/Alertmanager stack (URLs below)
+    sre_mode: str | None = "demo"
+    scenario: dict | None = None
+    prometheus_url: str | None = None
+    loki_url: str | None = None
+    alertmanager_url: str | None = None
+
+
+def _resolve_backend(req: ChatRequest) -> tuple[dict | None, dict[str, str]]:
+    """Return (scenario, backend_env) for this request's SRE sub-mode."""
+    if req.sre_mode == "live" and req.prometheus_url:
+        env = {"ECHO_SRE_BACKEND": "prometheus", "ECHO_SRE_PROM_URL": req.prometheus_url}
+        if req.loki_url:
+            env["ECHO_SRE_LOKI_URL"] = req.loki_url
+        if req.alertmanager_url:
+            env["ECHO_SRE_ALERTMANAGER_URL"] = req.alertmanager_url
+        return None, env
+    if req.sre_mode == "custom" and req.scenario:
+        return req.scenario, {"ECHO_SRE_BACKEND": "synthetic"}
+    # demo (default): the bundled synthetic incident.
+    return load_scenario(None), {"ECHO_SRE_BACKEND": "synthetic"}
 
 
 def _sse(obj: dict) -> str:
@@ -95,11 +119,12 @@ def create_app() -> FastAPI:
 
     @app.post("/stream-chat")
     async def stream_chat(req: ChatRequest) -> StreamingResponse:
+        scenario, backend_env = _resolve_backend(req)
         runner = AgentRunner(
             gateway,
             max_steps=req.max_steps or 8,
-            use_mcp=False,  # direct in-process tools for throughput under load
-            scenario=load_scenario(req.scenario),
+            scenario=scenario,
+            backend_env=backend_env,  # per-request: demo scenario or live Prometheus/Loki
         )
         model_used = gateway.provider_names[0] if gateway.provider_names else "mock"
 
