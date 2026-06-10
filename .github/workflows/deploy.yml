@@ -69,8 +69,14 @@ jobs:
           location: ${{ env.LOCATION }}
           targetPort: 8000
           ingress: external
-          environmentVariables: >-
-            GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
-            ECHO_SRE_BACKEND=synthetic
-            ECHO_SRE_PROVIDERS_FILE=config/providers.yaml
-            ECHO_SRE_CORS_ORIGINS=https://hello-sharon.dev,http://localhost:5173
+
+      # The deploy action injects env vars with `--replace-env-vars`, which is rejected by
+      # `az containerapp create` on first deploy. Set them here instead (valid on update).
+      - name: Set application environment variables
+        run: |
+          az containerapp update -n "$CONTAINERAPP_NAME" -g "$RESOURCE_GROUP" \
+            --set-env-vars \
+              "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" \
+              "ECHO_SRE_BACKEND=synthetic" \
+              "ECHO_SRE_PROVIDERS_FILE=config/providers.yaml" \
+              "ECHO_SRE_CORS_ORIGINS=https://hello-sharon.dev,http://localhost:5173"
