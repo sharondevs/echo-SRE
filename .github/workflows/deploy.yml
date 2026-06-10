@@ -80,13 +80,19 @@ jobs:
         run: |
           IMAGE="$ACR_NAME.azurecr.io/echo-sre:${{ github.sha }}"
           ENV_VARS="GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }} ECHO_SRE_BACKEND=synthetic ECHO_SRE_PROVIDERS_FILE=config/providers.yaml ECHO_SRE_CORS_ORIGINS=https://hello-sharon.dev,http://localhost:5173"
-          if az containerapp show -n "$CONTAINERAPP_NAME" -g "$RESOURCE_GROUP" -o none 2>/dev/null; then
-            az containerapp registry set -n "$CONTAINERAPP_NAME" -g "$RESOURCE_GROUP" \
-              --server "$ACR_NAME.azurecr.io" \
-              --username "${{ secrets.ACR_USERNAME }}" --password "${{ secrets.ACR_PASSWORD }}" -o none
-            az containerapp update -n "$CONTAINERAPP_NAME" -g "$RESOURCE_GROUP" \
-              --image "$IMAGE" --set-env-vars $ENV_VARS -o none
-          else
+
+          STATE=$(az containerapp show -n "$CONTAINERAPP_NAME" -g "$RESOURCE_GROUP" \
+            --query "properties.provisioningState" -o tsv 2>/dev/null || echo Missing)
+
+          # A prior run can leave the app in a Failed state (e.g. it couldn't pull the
+          # image). You can't update a Failed app — delete it so we recreate cleanly.
+          if [ "$STATE" = "Failed" ]; then
+            echo "Existing app is in Failed state — deleting to recreate."
+            az containerapp delete -n "$CONTAINERAPP_NAME" -g "$RESOURCE_GROUP" --yes -o none
+            STATE=Missing
+          fi
+
+          if [ "$STATE" = "Missing" ]; then
             az containerapp create -n "$CONTAINERAPP_NAME" -g "$RESOURCE_GROUP" \
               --environment "$CONTAINERAPP_ENV" --image "$IMAGE" \
               --registry-server "$ACR_NAME.azurecr.io" \
@@ -94,6 +100,12 @@ jobs:
               --ingress external --target-port 8000 \
               --min-replicas 1 --max-replicas 3 \
               --env-vars $ENV_VARS -o none
+          else
+            az containerapp registry set -n "$CONTAINERAPP_NAME" -g "$RESOURCE_GROUP" \
+              --server "$ACR_NAME.azurecr.io" \
+              --username "${{ secrets.ACR_USERNAME }}" --password "${{ secrets.ACR_PASSWORD }}" -o none
+            az containerapp update -n "$CONTAINERAPP_NAME" -g "$RESOURCE_GROUP" \
+              --image "$IMAGE" --set-env-vars $ENV_VARS -o none
           fi
 
       - name: Show app URL
